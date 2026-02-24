@@ -38,7 +38,7 @@
                             <field name="port"/>
                             <field name="database"/>
                             <field name="username"/>
-                            <field name="password" password="True"/>
+                            <field name="password" />
                             <field name="trust_cert"/>
                         </group>
                         <group string="Sync Settings">
