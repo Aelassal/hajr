@@ -1,0 +1,260 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ═══════════════════════════════════════════════════════════════
+         QUEUE LINE VIEWS
+         ═══════════════════════════════════════════════════════════════ -->
+
+    <!-- Queue Line Form View (popup) -->
+    <record id="view_mssql_sync_queue_line_form" model="ir.ui.view">
+        <field name="name">mssql.sync.queue.line.form</field>
+        <field name="model">mssql.sync.queue.line</field>
+        <field name="arch" type="xml">
+            <form string="Queue Line">
+                <header>
+                    <button name="action_retry_line" type="object" string="Retry This Line"
+                            class="btn-primary" icon="fa-refresh"
+                            invisible="state != 'failed'"/>
+                    <button name="action_view_record" type="object" string="View Record"
+                            class="btn-secondary" icon="fa-external-link"
+                            invisible="not odoo_record_id"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,done,failed"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group string="Identification">
+                            <field name="name"/>
+                            <field name="mssql_id"/>
+                            <field name="mssql_table"/>
+                            <field name="sync_type"/>
+                        </group>
+                        <group string="Processing">
+                            <field name="retry_count"/>
+                            <field name="processed_at"/>
+                            <field name="odoo_model" invisible="not odoo_model"/>
+                            <field name="odoo_record_id" invisible="not odoo_record_id"/>
+                        </group>
+                    </group>
+                    <group string="Error Details" invisible="not error_message">
+                        <field name="error_message" readonly="1" nolabel="1"
+                               colspan="2" widget="text"/>
+                    </group>
+                    <group string="Raw Data" invisible="not record_data">
+                        <field name="record_data" readonly="1" nolabel="1"
+                               colspan="2" widget="text"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Queue Line List View (standalone) -->
+    <record id="view_mssql_sync_queue_line_list" model="ir.ui.view">
+        <field name="name">mssql.sync.queue.line.list</field>
+        <field name="model">mssql.sync.queue.line</field>
+        <field name="arch" type="xml">
+            <list string="Queue Lines" create="false"
+                  decoration-danger="state == 'failed'"
+                  decoration-success="state == 'done'"
+                  decoration-info="state == 'draft'"
+                  decoration-muted="state == 'cancel'">
+                <field name="name"/>
+                <field name="mssql_id"/>
+                <field name="sync_type"/>
+                <field name="state" widget="badge"
+                       decoration-success="state == 'done'"
+                       decoration-danger="state == 'failed'"
+                       decoration-info="state == 'draft'"
+                       decoration-muted="state == 'cancel'"/>
+                <field name="error_message" optional="show"/>
+                <field name="retry_count"/>
+                <field name="processed_at"/>
+                <field name="odoo_model" optional="hide"/>
+                <field name="odoo_record_id" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- ═══════════════════════════════════════════════════════════════
+         QUEUE VIEWS
+         ═══════════════════════════════════════════════════════════════ -->
+
+    <!-- Queue Form View -->
+    <record id="view_mssql_sync_queue_form" model="ir.ui.view">
+        <field name="name">mssql.sync.queue.form</field>
+        <field name="model">mssql.sync.queue</field>
+        <field name="arch" type="xml">
+            <form string="Sync Queue">
+                <header>
+                    <button name="action_process_queue" type="object"
+                            string="Process Queue" class="btn-primary" icon="fa-play"
+                            invisible="state in ('completed', 'processing')"
+                            confirm="Process all draft and failed lines in this queue?"/>
+                    <button name="action_retry_failed" type="object"
+                            string="Retry Failed" class="btn-warning" icon="fa-refresh"
+                            invisible="failed_count == 0 or state == 'processing'"/>
+                    <button name="action_set_to_completed" type="object"
+                            string="Set to Completed" class="btn-secondary" icon="fa-check"
+                            invisible="state in ('completed', 'processing')"
+                            confirm="This will cancel all remaining draft/failed lines. Continue?"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,processing,completed"/>
+                </header>
+                <sheet>
+                    <!-- Action Required Banner -->
+                    <div class="alert alert-danger" role="alert" style="margin-bottom: 10px;"
+                         invisible="not is_action_require or state == 'completed'">
+                        <strong>Manual Action Required:</strong>
+                        This queue has exhausted 3 automatic retry attempts.
+                        Please review the failed lines and retry manually, or set to completed.
+                    </div>
+
+                    <!-- Stat Buttons -->
+                    <div class="oe_button_box" name="button_box">
+                        <button class="oe_stat_button" icon="fa-list" disabled="1">
+                            <field name="total_count" string="Total" widget="statinfo"/>
+                        </button>
+                        <button class="oe_stat_button" icon="fa-pencil" disabled="1">
+                            <field name="draft_count" string="Draft" widget="statinfo"/>
+                        </button>
+                        <button class="oe_stat_button" icon="fa-check" disabled="1">
+                            <field name="done_count" string="Done" widget="statinfo"/>
+                        </button>
+                        <button class="oe_stat_button" icon="fa-times" disabled="1"
+                                invisible="failed_count == 0">
+                            <field name="failed_count" string="Failed" widget="statinfo"/>
+                        </button>
+                    </div>
+
+                    <group>
+                        <group string="Queue Details">
+                            <field name="name"/>
+                            <field name="sync_config_id"/>
+                            <field name="sync_type"/>
+                            <field name="sync_date"/>
+                        </group>
+                        <group string="Processing Info">
+                            <field name="queue_process_count"/>
+                            <field name="is_action_require"/>
+                            <field name="is_processing" invisible="1"/>
+                        </group>
+                    </group>
+
+                    <notebook>
+                        <page string="Queue Lines" name="lines">
+                            <field name="line_ids" nolabel="1">
+                                <list create="false"
+                                      decoration-danger="state == 'failed'"
+                                      decoration-success="state == 'done'"
+                                      decoration-info="state == 'draft'"
+                                      decoration-muted="state == 'cancel'">
+                                    <field name="name"/>
+                                    <field name="mssql_id"/>
+                                    <field name="state" widget="badge"
+                                           decoration-success="state == 'done'"
+                                           decoration-danger="state == 'failed'"
+                                           decoration-info="state == 'draft'"
+                                           decoration-muted="state == 'cancel'"/>
+                                    <field name="error_message" optional="show"/>
+                                    <field name="retry_count"/>
+                                    <field name="processed_at"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <!-- Queue List View -->
+    <record id="view_mssql_sync_queue_list" model="ir.ui.view">
+        <field name="name">mssql.sync.queue.list</field>
+        <field name="model">mssql.sync.queue</field>
+        <field name="arch" type="xml">
+            <list string="Sync Queues"
+                  decoration-danger="state == 'failed'"
+                  decoration-success="state == 'completed'"
+                  decoration-info="state == 'draft'"
+                  decoration-warning="state == 'partially_completed'"
+                  decoration-primary="state == 'processing'">
+                <field name="name"/>
+                <field name="sync_type"/>
+                <field name="sync_date"/>
+                <field name="state" widget="badge"
+                       decoration-success="state == 'completed'"
+                       decoration-danger="state == 'failed'"
+                       decoration-info="state == 'draft'"
+                       decoration-warning="state == 'partially_completed'"
+                       decoration-primary="state == 'processing'"/>
+                <field name="total_count" string="Total"/>
+                <field name="done_count" string="Done"/>
+                <field name="failed_count" string="Failed"/>
+                <field name="queue_process_count" string="Attempts"/>
+                <field name="is_action_require" string="Action Required"
+                       widget="boolean" optional="show"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Queue Search View -->
+    <record id="view_mssql_sync_queue_search" model="ir.ui.view">
+        <field name="name">mssql.sync.queue.search</field>
+        <field name="model">mssql.sync.queue</field>
+        <field name="arch" type="xml">
+            <search string="Search Queues">
+                <field name="name"/>
+                <field name="sync_type"/>
+                <filter name="draft" string="Draft"
+                        domain="[('state', '=', 'draft')]"/>
+                <filter name="partially_completed" string="Partially Completed"
+                        domain="[('state', '=', 'partially_completed')]"/>
+                <filter name="completed" string="Completed"
+                        domain="[('state', '=', 'completed')]"/>
+                <filter name="failed" string="Failed"
+                        domain="[('state', '=', 'failed')]"/>
+                <filter name="action_required" string="Action Required"
+                        domain="[('is_action_require', '=', True)]"/>
+                <separator/>
+                <filter name="not_completed" string="Not Completed"
+                        domain="[('state', '!=', 'completed')]"/>
+                <separator/>
+                <group expand="0" string="Group By">
+                    <filter name="group_by_type" string="Sync Type"
+                            context="{'group_by': 'sync_type'}"/>
+                    <filter name="group_by_state" string="State"
+                            context="{'group_by': 'state'}"/>
+                    <filter name="group_by_date" string="Sync Date"
+                            context="{'group_by': 'sync_date'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- Queue Action -->
+    <record id="action_mssql_sync_queue" model="ir.actions.act_window">
+        <field name="name">Sync Queue</field>
+        <field name="res_model">mssql.sync.queue</field>
+        <field name="view_mode">list,form</field>
+        <field name="context">{'search_default_not_completed': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No sync queues yet
+            </p>
+            <p>
+                Queues are created automatically when you run sync operations.
+                Failed records can be retried from here.
+            </p>
+        </field>
+    </record>
+
+    <!-- Menu Item -->
+    <menuitem id="menu_mssql_sync_queue"
+              name="Sync Queue"
+              parent="menu_mssql_sync_root"
+              action="action_mssql_sync_queue"
+              sequence="15"/>
+
+</odoo>

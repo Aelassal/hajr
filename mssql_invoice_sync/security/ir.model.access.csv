@@ -1,0 +1,7 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_mssql_sync_user,mssql.sync.user,model_mssql_sync,base.group_user,1,1,1,1
+access_mssql_sync_log_user,mssql.sync.log.user,model_mssql_sync_log,base.group_user,1,1,1,1
+access_mssql_operations_user,mssql.operations.user,model_mssql_operations,base.group_user,1,1,1,1
+access_mssql_sync_queue_user,mssql.sync.queue.user,model_mssql_sync_queue,base.group_user,1,1,1,1
+access_mssql_sync_queue_line_user,mssql.sync.queue.line.user,model_mssql_sync_queue_line,base.group_user,1,1,1,1
+

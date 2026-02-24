@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Operations Wizard Form View -->
+    <record id="view_mssql_operations_form" model="ir.ui.view">
+        <field name="name">mssql.operations.form</field>
+        <field name="model">mssql.operations</field>
+        <field name="arch" type="xml">
+            <form string="MSSQL Sync Operations">
+                <group>
+                    <group>
+                        <field name="sync_config_id"/>
+                        <field name="operation"/>
+                    </group>
+                    <group>
+                        <field name="date_from"/>
+                        <field name="date_to"/>
+                    </group>
+                </group>
+                <footer>
+                    <button name="execute" string="Execute" type="object" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- Operations Wizard Action -->
+    <record id="action_mssql_operations" model="ir.actions.act_window">
+        <field name="name">Sync Operations</field>
+        <field name="res_model">mssql.operations</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <!-- Menu Item under SQL Server Sync -->
+    <menuitem id="menu_mssql_operations"
+              name="Operations"
+              parent="menu_mssql_sync_root"
+              action="action_mssql_operations"
+              sequence="20"/>
+
+</odoo>

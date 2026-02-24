@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        
+        <!-- Cron Job: Daily Customer Invoice Sync (CI) -->
+        <record id="ir_cron_sync_customer_invoices_daily" model="ir.cron">
+            <field name="name">MSSQL: Daily Customer Invoice Sync (CI)</field>
+            <field name="model_id" ref="model_mssql_sync"/>
+            <field name="state">code</field>
+            <field name="code">
+# Sync customer invoices (SO → Delivery → Invoice → Payment) for previous day
+# datetime and timedelta are already available in context
+
+# Get yesterday's date
+yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).date()
+
+# Get the first mssql.sync record (or create if doesn't exist)
+sync_record = model.search([], limit=1)
+if not sync_record:
+    raise UserError('No MSSQL Sync configuration found. Please create one first.')
+
+# Set the invoice_date field to yesterday and run CI sync
+log("Running daily CI sync (action_create_invoice) for %s" % yesterday)
+sync_record.write({'invoice_date': yesterday})
+sync_record.action_create_invoice()
+log("Daily CI sync completed for %s" % yesterday)
+            </field>
+            <field name="interval_number">1</field>
+            <field name="interval_type">days</field>
+            <field name="active" eval="True"/>
+            <field name="priority">5</field>
+            <field name="nextcall" eval="(datetime.now() + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)"/>
+        </record>
+
+        <!-- Cron Job: Daily Vendor Bill Sync (VB) -->
+        <record id="ir_cron_sync_vendor_bills_daily" model="ir.cron">
+            <field name="name">MSSQL: Daily Vendor Bill Sync (VB)</field>
+            <field name="model_id" ref="model_mssql_sync"/>
+            <field name="state">code</field>
+            <field name="code">
+# Sync vendor bills (PO → Receipt → Bill → Payment) for previous day
+# datetime and timedelta are already available in context
+
+# Get yesterday's date
+yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).date()
+
+# Get the first mssql.sync record (or create if doesn't exist)
+sync_record = model.search([], limit=1)
+if not sync_record:
+    raise UserError('No MSSQL Sync configuration found. Please create one first.')
+
+# Set the purchase_invoice_date field to yesterday and run VB sync
+log("Running daily VB sync (sync_purchase_invoices) for %s" % yesterday)
+sync_record.write({'purchase_invoice_date': yesterday})
+sync_record.sync_purchase_invoices()
+log("Daily VB sync completed for %s" % yesterday)
+            </field>
+            <field name="interval_number">1</field>
+            <field name="interval_type">days</field>
+            <field name="active" eval="True"/>
+            <field name="priority">5</field>
+            <field name="nextcall" eval="(datetime.now() + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)"/>
+        </record>
+
+        <!-- Cron Job: Daily Master Data Sync (Products, Vendors, Customers) -->
+        <record id="ir_cron_sync_master_data_daily" model="ir.cron">
+            <field name="name">MSSQL: Daily Master Data Sync (New Records Only)</field>
+            <field name="model_id" ref="model_mssql_sync"/>
+            <field name="state">code</field>
+            <field name="code">
+# Sync master data (products, vendors, customers) daily
+# ONLY ADDS NEW RECORDS - does not update existing records
+# Skips existing records to avoid overwriting manual changes in Odoo
+# datetime and timedelta are already available in context
+
+# Get the first mssql.sync record
+sync_record = model.search([], limit=1)
+if not sync_record:
+    raise UserError('No MSSQL Sync configuration found. Please create one first.')
+
+# Sync products (only new ones)
+log("Running daily master data sync - Products (new records only)")
+try:
+    sync_record.sync_products()
+    log("✅ Products sync completed")
+except Exception as e:
+    log("❌ Products sync failed: %s" % str(e))
+
+# Sync vendors (only new ones)
+log("Running daily master data sync - Vendors (new records only)")
+try:
+    sync_record.sync_vendors()
+    log("✅ Vendors sync completed")
+except Exception as e:
+    log("❌ Vendors sync failed: %s" % str(e))
+
+# Sync customers (only new ones)
+log("Running daily master data sync - Customers (new records only)")
+try:
+    sync_record.sync_customers()
+    log("✅ Customers sync completed")
+except Exception as e:
+    log("❌ Customers sync failed: %s" % str(e))
+
+log("Daily master data sync completed")
+            </field>
+            <field name="interval_number">1</field>
+            <field name="interval_type">days</field>
+            <field name="active" eval="True"/>
+            <field name="priority">10</field>
+            <field name="nextcall" eval="(datetime.now() + timedelta(days=1)).replace(hour=2, minute=0, second=0, microsecond=0)"/>
+        </record>
+
+        <!-- Cron Job: Every 15 Minutes - Stock & Product Auto-Sync -->
+        <record id="ir_cron_stock_product_sync" model="ir.cron">
+            <field name="name">MSSQL: Stock &amp; Product Auto-Sync (15 min)</field>
+            <field name="model_id" ref="model_mssql_sync"/>
+            <field name="state">code</field>
+            <field name="code">model.cron_stock_and_product_sync()</field>
+            <field name="interval_number">15</field>
+            <field name="interval_type">minutes</field>
+            <field name="active" eval="True"/>
+            <field name="priority">5</field>
+            <field name="nextcall" eval="datetime.now() + timedelta(minutes=15)"/>
+        </record>
+
+        <!-- Cron Job: Daily Stock Reconciliation at 23:30 -->
+        <record id="ir_cron_daily_stock_reconciliation" model="ir.cron">
+            <field name="name">MSSQL: Daily Stock Reconciliation</field>
+            <field name="model_id" ref="model_mssql_sync"/>
+            <field name="state">code</field>
+            <field name="code">model.cron_daily_reconciliation()</field>
+            <field name="interval_number">1</field>
+            <field name="interval_type">days</field>
+            <field name="active" eval="True"/>
+            <field name="priority">10</field>
+            <field name="nextcall" eval="(datetime.now() + timedelta(days=1)).replace(hour=23, minute=30, second=0, microsecond=0)"/>
+        </record>
+
+        <!-- Cron Job: Queue Auto-Retry (every 15 min) -->
+        <record id="ir_cron_sync_queue_retry" model="ir.cron">
+            <field name="name">MSSQL: Sync Queue Auto-Retry (15 min)</field>
+            <field name="model_id" ref="model_mssql_sync_queue"/>
+            <field name="state">code</field>
+            <field name="code">model.cron_process_sync_queues()</field>
+            <field name="interval_number">15</field>
+            <field name="interval_type">minutes</field>
+            <field name="active" eval="True"/>
+            <field name="priority">5</field>
+            <field name="nextcall" eval="datetime.now() + timedelta(minutes=15)"/>
+        </record>
+
+    </data>
+</odoo>
+

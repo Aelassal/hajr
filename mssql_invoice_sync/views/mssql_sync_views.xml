@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_mssql_sync_form" model="ir.ui.view">
+        <field name="name">mssql.sync.form</field>
+        <field name="model">mssql.sync</field>
+        <field name="arch" type="xml">
+            <form string="SQL Server Sync">
+                <header>
+                    <button name="action_smart_connect" type="object" string="Smart Connect"
+                            class="btn-primary" icon="fa-magic"
+                            invisible="smart_connect_done"
+                            confirm="This will sync all master data (branches, products, vendors, customers) and set initial stock levels. Continue?"/>
+                    <button name="test_connection" type="object" string="Test Connection" class="oe_stat_button" icon="fa-plug"/>
+                    <button name="sync_products" string="Fetch Products" type="object" class="btn-primary"
+                            invisible="products_fetched"/>
+                    <button name="sync_vendors" string="Fetch Vendors" type="object" class="btn-primary"
+                            invisible="vendors_fetched"/>
+                    <button name="sync_customers" string="Fetch Customers" type="object" class="btn-primary"
+                            invisible="customers_fetched"/>
+                    <button name="update_prices" string="Update Prices" type="object" class="btn-secondary"
+                            invisible="not products_fetched"/>
+                    <button name="action_create_invoice" string="Create Invoice" type="object" class="btn-primary"/>
+                    <button name="sync_purchase_invoices" string="Sync Purchase Invoices" type="object" class="btn-primary"/>
+                    <button name="action_migrate_products_to_storable" string="Migrate to Storable" type="object"
+                            class="btn-warning"
+                            invisible="products_migrated_to_storable"
+                            confirm="This will convert all MSSQL-synced products to storable (inventory-tracked). Continue?"/>
+                    <button name="action_reconcile_stock" string="Reconcile Stock" type="object"
+                            class="btn-secondary" icon="fa-refresh"
+                            invisible="not smart_connect_done"/>
+                </header>
+                <sheet>
+
+                    <group>
+                        <group string="Connection Settings">
+                            <field name="name"/>
+                            <field name="server"/>
+                            <field name="port"/>
+                            <field name="database"/>
+                            <field name="username"/>
+                            <field name="password" password="True"/>
+                            <field name="trust_cert"/>
+                        </group>
+                        <group string="Sync Settings">
+                            <field name="invoice_date"/>
+                            <field name="purchase_invoice_date"/>
+                            <field name="products_fetched" readonly="1"/>
+                            <field name="vendors_fetched" readonly="0"/>
+                            <field name="customers_fetched" readonly="1"/>
+                        </group>
+                    </group>
+                    
+                    <notebook>
+                        <page string="Payment Method Journal Mapping" name="payment_journal_mapping">
+                            <group>
+                                <group string="Cash Payment Methods">
+                                    <field name="payment_method_cash_journal_id" 
+                                           options="{'no_create': True, 'no_open': True}"/>
+                                    <field name="payment_method_coupon_journal_id" 
+                                           options="{'no_create': True, 'no_open': True}"/>
+                                    <field name="payment_method_points_journal_id"
+                                           options="{'no_create': True, 'no_open': True}"/>
+                                </group>
+                                <group string="Bank/Card Payment Methods">
+                                    <field name="payment_method_mada_journal_id" 
+                                           options="{'no_create': True, 'no_open': True}"/>
+                                    <field name="payment_method_visa_journal_id" 
+                                           options="{'no_create': True, 'no_open': True}"/>
+                                    <field name="payment_method_mastercard_journal_id" 
+                                           options="{'no_create': True, 'no_open': True}"/>
+                                    <field name="payment_method_stcpay_journal_id" 
+                                           options="{'no_create': True, 'no_open': True}"/>
+                                </group>
+                            </group>
+                            <div class="alert alert-info" role="alert" style="margin: 10px;">
+                                <strong>Optional Configuration:</strong> Map payment methods to specific journals. 
+                                If not configured, payments will use default cash/bank journals. 
+                                This allows you to have separate journals for Mada, Visa, MasterCard, etc.
+                                <br/><br/>
+                                <strong>Note:</strong> Invoice grouping remains unchanged (cash vs bank invoices). 
+                                Only payment journal destinations are affected.
+                            </div>
+                        </page>
+                        <page string="Advanced Settings" name="advanced_settings">
+                            <group>
+                                <group string="Performance Settings">
+                                    <field name="enable_batch_processing"/>
+                                    <field name="batch_size" invisible="not enable_batch_processing"/>
+                                </group>
+                                <group string="Warehouse Settings">
+                                    <field name="sales_warehouse_id" options="{'no_create': True, 'no_open': True}"/>
+                                </group>
+                            </group>
+                        </page>
+                        <page string="Stock Sync" name="stock_sync">
+                            <group>
+                                <group string="Setup Status">
+                                    <field name="smart_connect_done" readonly="1"/>
+                                    <field name="products_migrated_to_storable" readonly="1"/>
+                                    <field name="initial_sync_date" readonly="1"/>
+                                </group>
+                                <group string="Sync Watermarks">
+                                    <field name="last_product_sync_date" readonly="1"/>
+                                    <field name="last_stock_sync_date" readonly="1"/>
+                                    <field name="last_stock_sync_trans_id" readonly="1"/>
+                                </group>
+                            </group>
+                            <group>
+                                <group string="Sync Statistics">
+                                    <field name="stock_transfers_synced" readonly="1"/>
+                                    <field name="stock_adjustments_synced" readonly="1"/>
+                                </group>
+                                <group string="Reconciliation">
+                                    <field name="last_reconciliation_date" readonly="1"/>
+                                    <field name="reconciliation_discrepancy_count" readonly="1"/>
+                                </group>
+                            </group>
+                            <div class="alert alert-info" role="alert" style="margin: 10px;"
+                                 invisible="smart_connect_done">
+                                <strong>Getting Started:</strong> Click "Smart Connect" above to auto-discover
+                                branches, sync all products (as storable), vendors, customers, and set initial
+                                stock levels. After setup, the 15-minute cron will keep everything in sync.
+                            </div>
+                            <div class="alert alert-success" role="alert" style="margin: 10px;"
+                                 invisible="not smart_connect_done">
+                                <strong>Active:</strong> Smart Connect is configured. Stock moves are synced
+                                every 15 minutes. Daily reconciliation runs at 23:30.
+                                Use the Operations menu for manual imports.
+                            </div>
+                        </page>
+                    </notebook>
+                </sheet>
+
+            </form>
+        </field>
+    </record>
+
+    <record id="view_mssql_sync_list" model="ir.ui.view">
+        <field name="name">mssql.sync.list</field>
+        <field name="model">mssql.sync</field>
+        <field name="arch" type="xml">
+            <list string="SQL Server Connections">
+                <field name="name"/>
+                <field name="server"/>
+                <field name="database"/>
+                <field name="smart_connect_done"/>
+                <field name="products_fetched"/>
+                <field name="vendors_fetched"/>
+                <field name="customers_fetched"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="action_mssql_sync" model="ir.actions.act_window">
+        <field name="name">SQL Server Sync</field>
+        <field name="res_model">mssql.sync</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create a new SQL Server connection
+            </p>
+        </field>
+    </record>
+
+    <menuitem id="menu_mssql_sync_root" name="SQL Server Sync" sequence="100"/>
+    <menuitem id="menu_mssql_sync" name="Connection" 
+              action="action_mssql_sync" 
+              parent="menu_mssql_sync_root" 
+              sequence="10"/>
+</odoo>
+
