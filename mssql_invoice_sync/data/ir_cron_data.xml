@@ -37,24 +37,7 @@ log("Daily CI sync completed for %s" % yesterday)
             <field name="name">MSSQL: Daily Vendor Bill Sync (VB)</field>
             <field name="model_id" ref="model_mssql_sync"/>
             <field name="state">code</field>
-            <field name="code">
-# Sync vendor bills (PO → Receipt → Bill → Payment) for previous day
-# datetime and timedelta are already available in context
-
-# Get yesterday's date
-yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).date()
-
-# Get the first mssql.sync record (or create if doesn't exist)
-sync_record = model.search([], limit=1)
-if not sync_record:
-    raise UserError('No MSSQL Sync configuration found. Please create one first.')
-
-# Set the purchase_invoice_date field to yesterday and run VB sync
-log("Running daily VB sync (sync_purchase_invoices) for %s" % yesterday)
-sync_record.write({'purchase_invoice_date': yesterday})
-sync_record.sync_purchase_invoices()
-log("Daily VB sync completed for %s" % yesterday)
-            </field>
+            <field name="code">model.cron_sync_purchase_invoices()</field>
             <field name="interval_number">1</field>
             <field name="interval_type">days</field>
             <field name="active" eval="True"/>

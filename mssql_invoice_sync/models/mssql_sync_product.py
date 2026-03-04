@@ -77,6 +77,9 @@ class MssqlSyncProduct(models.Model):
                     vals['standard_price'] = float(item['PurchasePrice'])
                 if item.get('SellPrice') is not None:
                     vals['list_price'] = float(item['SellPrice'])
+                if item.get('BarCode'):
+                    vals['barcode'] = item['BarCode']
+                    vals['default_code'] = item['BarCode']
 
                 if item_id in existing_products:
                     # Skip existing products - only add new ones
@@ -114,69 +117,78 @@ class MssqlSyncProduct(models.Model):
                 pass
             raise UserError(f'Product sync failed: {str(e)}')
 
-    def update_prices(self):
-        """Update product prices from SQL Server - Optimized for large datasets"""
+    def action_update_products(self):
+        """Update product prices, barcode, and default_code from MSSQL.
+
+        Fetches prices + barcode from tblItemsUnits (StockUnit=1) and updates
+        standard_price, list_price, barcode, default_code. Stock quantities are
+        NOT updated here — they are managed by PO/SO pickings.
+        """
+        self.ensure_one()
         conn = self._get_connection()
         cursor = conn.cursor(as_dict=True)
 
         try:
-            # Fetch current prices for all products
             price_data = self._query_current_prices(cursor)
             conn.close()
 
             if not price_data:
-                raise UserError('No price data found in SQL Server')
+                raise UserError('No product data found in SQL Server')
 
             product_obj = self.env['product.product']
-
-            # Get all ItemIDs for batch lookup
             item_ids = [item['ItemID'] for item in price_data if item['ItemID']]
 
-            # Fetch all existing products in one query - O(1) lookup
             existing_products = {
                 p.x_sql_item_id: p for p in product_obj.search([('x_sql_item_id', 'in', item_ids)])
             }
 
-            # Prepare price updates
-            price_updates = {}
-            for price_item in price_data:
-                item_id = price_item['ItemID']
+            product_updates = {}
+            for item in price_data:
+                item_id = item['ItemID']
                 if not item_id or item_id not in existing_products:
                     continue
 
                 product = existing_products[item_id]
-                if product.id not in price_updates:
-                    price_updates[product.id] = {}
+                if product.id not in product_updates:
+                    product_updates[product.id] = {}
 
-                # Update prices if available
-                if price_item.get('PurchasePrice') is not None:
-                    price_updates[product.id]['standard_price'] = float(price_item['PurchasePrice'])
-                if price_item.get('SellPrice') is not None:
-                    price_updates[product.id]['list_price'] = float(price_item['SellPrice'])
+                if item.get('PurchasePrice') is not None:
+                    product_updates[product.id]['standard_price'] = float(item['PurchasePrice'])
+                if item.get('SellPrice') is not None:
+                    product_updates[product.id]['list_price'] = float(item['SellPrice'])
+                if item.get('BarCode'):
+                    product_updates[product.id]['barcode'] = item['BarCode']
+                    product_updates[product.id]['default_code'] = item['BarCode']
 
-            # Batch update prices
             updated = 0
-            if price_updates:
+            if product_updates:
                 batch_size = 1000
-                product_ids = list(price_updates.keys())
+                product_ids = list(product_updates.keys())
                 for i in range(0, len(product_ids), batch_size):
                     batch_ids = product_ids[i:i + batch_size]
                     batch_products = product_obj.browse(batch_ids)
                     for product in batch_products:
-                        if product.id in price_updates:
-                            product.write(price_updates[product.id])
+                        if product.id in product_updates:
+                            product.write(product_updates[product.id])
                     updated += len(batch_ids)
-                    # Clear cache periodically to free memory
                     if i % (batch_size * 10) == 0:
                         self.env.clear()
 
-            return self._success_notification('Price Update Complete', f'Updated prices for {updated} products')
+            _logger.info(f"Update Products: updated prices/barcode for {updated} products")
+
+            # Now sync stock quantities
+            qty_result = self.action_update_quantities()
+
+            return self._success_notification(
+                'Update Products Complete',
+                f'Updated prices/barcode for {updated} products. '
+                f'Stock quantities synced from tblItemsTrans.')
         except Exception as e:
             try:
                 conn.close()
-            except:
+            except Exception:
                 pass
-            raise UserError(f'Price update failed: {str(e)}')
+            raise UserError(f'Update products failed: {str(e)}')
 
     # ── New Product Auto-Detection ──────────────────────────────────────
 
@@ -240,6 +252,9 @@ class MssqlSyncProduct(models.Model):
                 vals['standard_price'] = float(item['PurchasePrice'])
             if item.get('SellPrice') is not None:
                 vals['list_price'] = float(item['SellPrice'])
+            if item.get('BarCode'):
+                vals['barcode'] = item['BarCode']
+                vals['default_code'] = item['BarCode']
             to_create.append(vals)
 
         created = 0
@@ -322,7 +337,7 @@ class MssqlSyncProduct(models.Model):
     # ── SQL Queries ─────────────────────────────────────────────────────
 
     def _query_products_with_prices(self, cursor):
-        """Fetch products with current prices from MSSQL"""
+        """Fetch products with current prices from tblItemsUnits (StockUnit=1)."""
         cursor.execute("""
             SELECT
                 i.ItemID,
@@ -333,33 +348,27 @@ class MssqlSyncProduct(models.Model):
                 i.CatID,
                 i.DepartmentID,
                 i.VatCat,
-                ip.PurchasePrice,
-                ip.SellPrice,
-                ip.UnitName
+                iu.PurchasePrice,
+                iu.SellPrice,
+                iu.UnitName,
+                iu.BarCode
             FROM [dbo].[tblItems] i
-            LEFT JOIN (
-                SELECT
-                    ItemID,
-                    PurchasePrice,
-                    SellPrice,
-                    UnitName,
-                    ROW_NUMBER() OVER (PARTITION BY ItemID ORDER BY PriceDate DESC, PriceID DESC) as rn
-                FROM [dbo].[tblItemsPriceChange]
-                WHERE CurrentPrice = 1
-            ) ip ON i.ItemID = ip.ItemID AND ip.rn = 1
+            LEFT JOIN [dbo].[tblItemsUnits] iu
+                ON i.ItemID = iu.ItemID AND iu.StockUnit = 1
         """)
         return cursor.fetchall()
 
     def _query_current_prices(self, cursor):
-        """Fetch current prices for all products from MSSQL"""
+        """Fetch current prices, barcode for all products from tblItemsUnits (StockUnit=1)."""
         cursor.execute("""
             SELECT
-                ip.ItemID,
-                ip.PurchasePrice,
-                ip.SellPrice,
-                ip.UnitName
-            FROM [dbo].[tblItemsPriceChange] ip
-            WHERE ip.CurrentPrice = 1
+                iu.ItemID,
+                iu.PurchasePrice,
+                iu.SellPrice,
+                iu.UnitName,
+                iu.BarCode
+            FROM [dbo].[tblItemsUnits] iu
+            WHERE iu.StockUnit = 1
         """)
         return cursor.fetchall()
 
@@ -369,15 +378,10 @@ class MssqlSyncProduct(models.Model):
             SELECT
                 i.ItemID, i.ItemName, i.EnglishName,
                 i.Tax, i.SupplierID, i.CatID, i.DepartmentID, i.VatCat,
-                ip.PurchasePrice, ip.SellPrice, ip.UnitName
+                iu.PurchasePrice, iu.SellPrice, iu.UnitName, iu.BarCode
             FROM [dbo].[tblItems] i
-            LEFT JOIN (
-                SELECT
-                    ItemID, PurchasePrice, SellPrice, UnitName,
-                    ROW_NUMBER() OVER (PARTITION BY ItemID ORDER BY PriceDate DESC, PriceID DESC) as rn
-                FROM [dbo].[tblItemsPriceChange]
-                WHERE CurrentPrice = 1
-            ) ip ON i.ItemID = ip.ItemID AND ip.rn = 1
+            LEFT JOIN [dbo].[tblItemsUnits] iu
+                ON i.ItemID = iu.ItemID AND iu.StockUnit = 1
             WHERE i.DateCreated > %s OR i.ModifiedDate > %s
         """, (since_date, since_date))
         return cursor.fetchall()

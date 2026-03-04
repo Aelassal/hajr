@@ -190,7 +190,7 @@ class MssqlSyncSales(models.Model):
                 session_id = session['SessionID']
 
                 # Skip already-synced sessions
-                if any(str(session_id) in ref for ref in existing_refs):
+                if any(ref.startswith(f"Session {session_id} -") for ref in existing_refs):
                     skipped_existing += 1
                     continue
 
@@ -283,6 +283,15 @@ class MssqlSyncSales(models.Model):
         session_lines = data['lines']
         session_payments = data.get('payments', [])
         invoice_range = data.get('invoice_range', {})
+
+        # Duplicate guard — skip if this session was already imported
+        session_id_check = session['SessionID']
+        existing_so = self.env['sale.order'].search([
+            ('client_order_ref', '=like', f"Session {session_id_check} -%")
+        ], limit=1)
+        if existing_so:
+            _logger.info(f"Skipping Session {session_id_check} — already imported as {existing_so.name}")
+            return {'model': 'sale.order', 'id': existing_so.id, 'skipped': True}
 
         # Parse returns data — backward compatible with old numeric format
         returns_raw = data.get('returns')
@@ -604,10 +613,79 @@ class MssqlSyncSales(models.Model):
                 payment_journal_map, cash_journal, bank_journal
             )
 
+            # Post cash differences (shortage/surplus) like Odoo POS
+            try:
+                self._post_session_cash_differences(
+                    session_payments, session_date,
+                    payment_journal_map, cash_journal, bank_journal,
+                    session_id
+                )
+            except Exception as e:
+                _logger.warning(f"Session {session_id}: Failed to post cash differences: {e}")
+
         _logger.info(f"Session {session_id}: SO {sale_order.name}, "
                      f"Invoice {invoice.name} created successfully")
 
         return {'model': 'account.move', 'id': invoice.id}
+
+    def _post_session_cash_differences(self, session_payments, session_date,
+                                       payment_journal_map, cash_journal, bank_journal,
+                                       session_id):
+        """Create bank statement lines for cash differences (like Odoo POS).
+
+        For each payment type where DifAmount != 0, creates an
+        account.bank.statement.line with counterpart_account_id set to
+        the journal's loss or profit account.
+        """
+        for payment in session_payments:
+            dif_amount = self._coerce_numeric(payment.get('DifAmount')) or 0
+            if abs(dif_amount) < 0.01:
+                continue
+
+            payment_type = payment.get('PaymentType') or 1
+            journal = payment_journal_map.get(payment_type, cash_journal or bank_journal)
+            if not journal:
+                continue
+
+            # DifAmount = PCAmount - ActualAmount in MSSQL
+            # Positive = shortage (actual < system) → loss
+            # Negative = surplus (actual > system) → profit
+            if dif_amount > 0:  # Shortage: actual < system → loss
+                if not journal.loss_account_id:
+                    _logger.warning(f"Session {session_id}: No loss account on journal "
+                                    f"{journal.name}, skipping difference {dif_amount}")
+                    continue
+                counterpart = journal.loss_account_id.id
+                ref = (f"Cash shortage - Session {session_id} - "
+                       f"{payment.get('PaymentMethodName', '')}")
+                # Bank statement line amount should be negative (money missing)
+                stmt_amount = -dif_amount
+            else:  # Surplus: actual > system → profit
+                if not journal.profit_account_id:
+                    _logger.warning(f"Session {session_id}: No profit account on journal "
+                                    f"{journal.name}, skipping difference {dif_amount}")
+                    continue
+                counterpart = journal.profit_account_id.id
+                ref = (f"Cash surplus - Session {session_id} - "
+                       f"{payment.get('PaymentMethodName', '')}")
+                # Bank statement line amount should be positive (extra money)
+                stmt_amount = -dif_amount
+
+            note = payment.get('DiffNote')
+            if note:
+                ref += f" ({note})"
+
+            self.env['account.bank.statement.line'].create({
+                'journal_id': journal.id,
+                'amount': stmt_amount,
+                'date': session_date,
+                'payment_ref': ref,
+                'counterpart_account_id': counterpart,
+            })
+            _logger.info(f"Session {session_id}: Posted difference {dif_amount} "
+                         f"(stmt_amount={stmt_amount}) for "
+                         f"{payment.get('PaymentMethodName', '')} to "
+                         f"{'loss' if dif_amount > 0 else 'profit'} account")
 
     def action_create_invoice(self):
         """Create session-based invoices using the invoice_date field"""
@@ -1593,12 +1671,14 @@ class MssqlSyncSales(models.Model):
                 ca.SessionID,
                 cad.PaymentType,
                 pt.PaymentType AS PaymentMethodName,
-                ROUND(cad.ActualAmount, 2) AS Amount
+                ROUND(cad.ActualAmount, 2) AS Amount,
+                ROUND(cad.DifAmount, 2) AS DifAmount,
+                cad.DiffNote
             FROM [dbo].[tblCashierActivityDetail] cad
             INNER JOIN [dbo].[tblCashierActivity] ca ON cad.SessionID = ca.SessionID
             LEFT JOIN [dbo].[tblPaymentType] pt ON cad.PaymentType = pt.PaymentTypeID
             WHERE ca.SessionID IN ({placeholders})
-              AND cad.ActualAmount > 0
+              AND (cad.ActualAmount > 0 OR cad.DifAmount != 0)
               AND cad.PaymentType != 5
             ORDER BY ca.SessionID, cad.PaymentType
         """, session_ids)

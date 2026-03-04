@@ -1,4 +1,4 @@
-from odoo import models, fields
+from odoo import models, fields, api
 from odoo.exceptions import UserError
 from datetime import timedelta, datetime
 import json
@@ -12,6 +12,127 @@ class MssqlSyncPurchase(models.Model):
 
     # ── Purchase Fields ───────────────────────────────────────────────
     purchase_invoice_date = fields.Date(string='Purchase Invoice Date', default=fields.Date.today)
+
+    # ── Cron ─────────────────────────────────────────────────────────
+
+    @api.model
+    def cron_sync_purchase_invoices(self):
+        """Cron: sync POs posted in the last 24 hours + yesterday's POs by InvoiceDate."""
+        sync_record = self.search([], limit=1)
+        if not sync_record:
+            _logger.warning('cron_sync_purchase_invoices: No MSSQL Sync config found')
+            return
+
+        yesterday = (datetime.now() - timedelta(days=1)).date()
+        since_datetime = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
+
+        # 1. Sync yesterday's POs by InvoiceDate (existing flow, now with Posted=1)
+        _logger.info(f"Cron VB sync: syncing POs for InvoiceDate={yesterday}")
+        try:
+            sync_record.write({'purchase_invoice_date': yesterday})
+            sync_record.sync_purchase_invoices()
+        except Exception as e:
+            _logger.error(f"Cron VB sync (by InvoiceDate) failed: {e}")
+
+        # 2. Sync POs posted in the last 24h (catches late-posted POs)
+        _logger.info(f"Cron VB sync: syncing POs posted since {since_datetime}")
+        try:
+            sync_record._sync_recently_posted_invoices(since_datetime)
+        except Exception as e:
+            _logger.error(f"Cron VB sync (by PostedDate) failed: {e}")
+
+    def _sync_recently_posted_invoices(self, since_datetime):
+        """Sync purchase invoices posted since a given datetime."""
+        conn = self._get_connection()
+        cursor = conn.cursor(as_dict=True)
+
+        try:
+            purchase_invoices = self._query_recently_posted_purchase_invoices(cursor, since_datetime)
+
+            if not purchase_invoices:
+                conn.close()
+                _logger.info("No recently posted purchase invoices found")
+                return
+
+            invoice_ids = [inv['PurchaseInvoiceID'] for inv in purchase_invoices]
+            details = self._query_purchase_invoice_details(cursor, invoice_ids)
+            conn.close()
+
+            # Group details by invoice
+            details_by_invoice = {}
+            for d in details:
+                details_by_invoice.setdefault(d['PurchaseInvoiceID'], []).append(d)
+
+            # Check for existing POs (idempotency)
+            existing_origins = set(
+                self.env['purchase.order'].search([
+                    ('origin', '!=', False),
+                ]).mapped('origin')
+            )
+
+            # Pre-sync vendors if needed
+            supplier_ids = list({inv['SupplierID'] for inv in purchase_invoices if inv['SupplierID']})
+            vendors = {
+                p.x_sql_vendor_id: p for p in self.env['res.partner'].search([
+                    ('x_sql_vendor_id', 'in', supplier_ids),
+                    ('supplier_rank', '>', 0)
+                ])
+            }
+            missing_supplier_ids = [sid for sid in supplier_ids if sid not in vendors]
+            if missing_supplier_ids:
+                try:
+                    self.sync_vendors()
+                except Exception as e:
+                    _logger.error(f"Failed to auto-sync vendors: {e}")
+
+            # Pre-create warehouses
+            branch_ids = list({inv['BranchID'] for inv in purchase_invoices if inv.get('BranchID')})
+            if branch_ids:
+                self._get_or_create_warehouses(branch_ids)
+
+            # Create queue
+            queue = self.env['mssql.sync.queue'].create({
+                'sync_config_id': self.id,
+                'sync_type': 'purchase_invoice',
+            })
+
+            queued = 0
+            for inv in purchase_invoices:
+                inv_id = inv['PurchaseInvoiceID']
+                if f"MSSQL-PI-{inv_id}" in existing_origins:
+                    continue
+
+                inv_details = details_by_invoice.get(inv_id, [])
+                if not inv_details:
+                    continue
+
+                record_data = {
+                    'invoice': dict(inv),
+                    'details': [dict(d) for d in inv_details],
+                }
+
+                self.env['mssql.sync.queue.line'].create({
+                    'queue_id': queue.id,
+                    'name': f"PI-{inv_id} ({inv.get('SupplierName', 'Unknown')})",
+                    'mssql_id': str(inv_id),
+                    'mssql_table': 'tblPurchaseInvoice',
+                    'record_data': json.dumps(record_data, default=str),
+                    'state': 'draft',
+                })
+                queued += 1
+
+            if queued > 0:
+                queue.action_process_queue()
+                _logger.info(f"Recently posted POs: queued and processed {queued} invoices")
+            else:
+                _logger.info("No new recently posted POs to process")
+
+        except Exception as e:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _logger.error(f"_sync_recently_posted_invoices failed: {e}")
 
     # ── Purchase Invoice Sync ─────────────────────────────────────────
 
@@ -92,7 +213,7 @@ class MssqlSyncPurchase(models.Model):
                 inv_id = pi['PurchaseInvoiceID']
 
                 # Skip already-synced
-                if any(str(inv_id) in origin for origin in existing_origins):
+                if f"MSSQL-PI-{inv_id}" in existing_origins:
                     continue
 
                 details = details_by_invoice.get(inv_id, [])
@@ -157,6 +278,15 @@ class MssqlSyncPurchase(models.Model):
 
         # Coerce numeric fields that survive JSON round-trip as strings
         invoice_id = purchase_invoice['PurchaseInvoiceID']
+
+        # Duplicate guard — skip if this PO was already imported
+        existing_po = self.env['purchase.order'].search([
+            ('origin', '=', f"MSSQL-PI-{invoice_id}")
+        ], limit=1)
+        if existing_po:
+            _logger.info(f"Skipping PurchaseInvoice {invoice_id} — already imported as {existing_po.name}")
+            return {'model': 'purchase.order', 'id': existing_po.id, 'skipped': True}
+
         supplier_id = int(purchase_invoice['SupplierID'])
         branch_id = int(purchase_invoice['BranchID'])
 
@@ -205,6 +335,7 @@ class MssqlSyncPurchase(models.Model):
 
         # Create PO lines
         po_lines = []
+        mssql_prices = []  # Track MSSQL prices to force-write after PO creation
         for line in invoice_lines:
             item_id = line['ItemID']
             product = products.get(item_id)
@@ -248,6 +379,8 @@ class MssqlSyncPurchase(models.Model):
                 'name': line['ItemName'] or line['EnglishName'] or product.name,
                 'date_planned': inv_date,
             }))
+            # Store the MSSQL price per line index to force-write after creation
+            mssql_prices.append(price_unit)
 
         if not po_lines:
             raise UserError(f'No valid lines for Purchase Invoice {invoice_id}')
@@ -258,6 +391,7 @@ class MssqlSyncPurchase(models.Model):
 
         po_vals = {
             'partner_id': vendor.id,
+            'origin': f"MSSQL-PI-{invoice_id}",
             'date_order': inv_date,
             'order_line': po_lines,
             'notes': purchase_invoice.get('InvoiceNote', ''),
@@ -267,6 +401,14 @@ class MssqlSyncPurchase(models.Model):
             po_vals['picking_type_id'] = warehouse.in_type_id.id
 
         po = self.env['purchase.order'].create(po_vals)
+
+        # Force MSSQL prices on PO lines — Odoo's computed fields may override
+        # price_unit with the product's standard_price during create().
+        # This ensures prices always come from MSSQL, even when 0.
+        non_decimal_lines = po.order_line  # all lines at this point are from MSSQL
+        for idx, po_line in enumerate(non_decimal_lines):
+            if idx < len(mssql_prices) and po_line.price_unit != mssql_prices[idx]:
+                po_line.write({'price_unit': mssql_prices[idx]})
 
         # Decimal adjustment
         mssql_net_total = round(float(purchase_invoice['NetTotal'] or 0), 2)
@@ -696,8 +838,41 @@ class MssqlSyncPurchase(models.Model):
             WHERE pi.InvoiceDate >= %s
                AND pi.InvoiceDate < %s
                AND pi.IsReturn = 0
+               AND pi.Posted = 1
             ORDER BY pi.InvoiceDate DESC, pi.PurchaseInvoiceID
         """, (date_str, next_date))
+        return cursor.fetchall()
+
+    def _query_recently_posted_purchase_invoices(self, cursor, since_datetime):
+        """Fetch purchase invoices posted since a given datetime (for cron)."""
+        cursor.execute("""
+            SELECT
+                pi.PurchaseInvoiceID,
+                pi.SupplierInvoiceID,
+                pi.SupplierID,
+                pi.BranchID,
+                pi.InvoiceDate,
+                pi.InvoiceDueDate,
+                pi.InvoiceTotal,
+                pi.NetTotal,
+                pi.TaxAmount,
+                pi.Discount,
+                pi.PaidAmount,
+                pi.DueAmount,
+                pi.InvoiceNote,
+                pi.IsReturn,
+                pi.Posted,
+                pi.PostedDate,
+                pi.Closed,
+                pi.Paid,
+                s.SupplierName
+            FROM [dbo].[tblPurchaseInvoice] pi
+            LEFT JOIN [dbo].[tblSuppliers] s ON pi.SupplierID = s.SupplierID
+            WHERE pi.Posted = 1
+               AND pi.PostedDate >= %s
+               AND pi.IsReturn = 0
+            ORDER BY pi.InvoiceDate DESC, pi.PurchaseInvoiceID
+        """, (since_datetime,))
         return cursor.fetchall()
 
     def _query_purchase_invoice_details(self, cursor, invoice_ids):

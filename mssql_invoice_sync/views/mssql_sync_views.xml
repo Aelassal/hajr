@@ -17,7 +17,7 @@
                             invisible="vendors_fetched"/>
                     <button name="sync_customers" string="Fetch Customers" type="object" class="btn-primary"
                             invisible="customers_fetched"/>
-                    <button name="update_prices" string="Update Prices" type="object" class="btn-secondary"
+                    <button name="action_update_products" string="Update Products" type="object" class="btn-secondary"
                             invisible="not products_fetched"/>
                     <button name="action_create_invoice" string="Create Invoice" type="object" class="btn-primary"/>
                     <button name="sync_purchase_invoices" string="Sync Purchase Invoices" type="object" class="btn-primary"/>
@@ -38,7 +38,7 @@
                             <field name="port"/>
                             <field name="database"/>
                             <field name="username"/>
-                            <field name="password" />
+                            <field name="password" password="True"/>
                             <field name="trust_cert"/>
                         </group>
                         <group string="Sync Settings">

@@ -61,9 +61,8 @@ class MssqlSyncStock(models.Model):
             _logger.info("Smart Connect: Syncing customers...")
             self.sync_customers()
 
-            # Step 7: Set initial stock levels from tblItemsCost.CurrentBalance
-            _logger.info("Smart Connect: Setting initial stock levels...")
-            self._set_initial_stock_levels()
+            # Step 7: Skip initial stock — qty starts at 0, managed by PO/SO pickings
+            _logger.info("Smart Connect: Skipping initial stock (all products start at 0)")
 
             # Step 8: Record watermarks
             conn2 = self._get_connection()
@@ -95,7 +94,7 @@ class MssqlSyncStock(models.Model):
             raise UserError(f'Smart Connect failed: {str(e)}')
 
     def _set_initial_stock_levels(self):
-        """Set initial stock quants from tblItemsCost.CurrentBalance per branch/product.
+        """Set initial stock quants from tblItemsTrans per branch/product.
 
         Optimized for 15k+ products using direct SQL batch insert.
         This is appropriate for initial stock setup (no prior state to adjust from).
@@ -145,7 +144,7 @@ class MssqlSyncStock(models.Model):
                     skipped_lines.append({
                         'name': f"Stock: Item {row['ItemID']} @ Branch {row['BranchID']}",
                         'mssql_id': f"{row['ItemID']}_{row['BranchID']}",
-                        'mssql_table': 'tblItemsCost',
+                        'mssql_table': 'tblItemsTrans',
                         'record_data': json.dumps({
                             'ItemID': row['ItemID'],
                             'BranchID': row['BranchID'],
@@ -871,7 +870,7 @@ class MssqlSyncStock(models.Model):
     # ── Update Quantities ────────────────────────────────────────────────
 
     def action_update_quantities(self):
-        """Update all stock quant quantities from tblItemsCost.CurrentBalance.
+        """Update all stock quant quantities from tblItemsTrans.
 
         Re-syncs current stock levels from MSSQL. Creates queue for
         any records that can't be matched (missing product/warehouse).
@@ -921,7 +920,7 @@ class MssqlSyncStock(models.Model):
                         'name': f"Stock: Item {row['ItemID']} "
                                 f"@ Branch {row['BranchID']}",
                         'mssql_id': f"{row['ItemID']}_{row['BranchID']}",
-                        'mssql_table': 'tblItemsCost',
+                        'mssql_table': 'tblItemsTrans',
                         'record_data': json.dumps({
                             'ItemID': row['ItemID'],
                             'BranchID': row['BranchID'],
@@ -1475,13 +1474,15 @@ class MssqlSyncStock(models.Model):
         return cursor.fetchall()
 
     def _query_current_stock_levels(self, cursor):
-        """Fetch current stock levels per product/branch from tblItemsCost."""
+        """Fetch current stock levels per product/branch from tblItemsTrans."""
         cursor.execute("""
             SELECT
-                ic.ItemID, ic.BranchID,
-                ic.CurrentBalance, ic.AvgPurchasePrice
-            FROM [dbo].[tblItemsCost] ic
-            WHERE ic.CurrentBalance != 0
+                ItemID, BranchID,
+                SUM(QuantityIn) - SUM(QuantityOut) AS CurrentBalance
+            FROM [dbo].[tblItemsTrans]
+            WHERE BranchID > 0
+            GROUP BY ItemID, BranchID
+            HAVING SUM(QuantityIn) - SUM(QuantityOut) != 0
         """)
         return cursor.fetchall()
 
@@ -1599,13 +1600,14 @@ class MssqlSyncStock(models.Model):
         return cursor.fetchall()
 
     def _query_purchase_invoices_since(self, cursor, since_date):
-        """Fetch purchase invoices since a date for reconciliation."""
+        """Fetch posted purchase invoices since a date for reconciliation."""
         cursor.execute("""
             SELECT
                 pi.InvoiceID, pi.InvoiceDate, pi.SupplierID,
                 pi.TotalAmount, pi.BranchID
             FROM [dbo].[tblPurchaseInvoice] pi
             WHERE pi.InvoiceDate >= %s
+              AND pi.Posted = 1
             ORDER BY pi.InvoiceID
         """, (since_date,))
         return cursor.fetchall()
