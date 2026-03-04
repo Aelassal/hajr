@@ -1262,7 +1262,7 @@ class MssqlSyncStock(models.Model):
         Phase A: Find missing stock operations (TransType 3-7) in tblItemsTrans
         Phase B: Find missing POS sessions
         Phase C: Find missing purchase invoices
-        Phase D: Compare tblItemsCost vs stock.quant and report discrepancies
+        Phase D: Compare tblItemsTrans vs stock.quant and report discrepancies
         """
         self.ensure_one()
         if not self.initial_sync_date:
