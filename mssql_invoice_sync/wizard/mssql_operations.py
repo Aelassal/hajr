@@ -24,7 +24,6 @@ class MssqlOperations(models.TransientModel):
         ('sync_stock_adjustments', 'Import Stock Adjustments'),
         ('sync_stock_scrap', 'Import Scrap/Write-offs'),
         ('reconcile_stock', 'Reconcile Stock Levels'),
-        ('initial_stock', 'Set Initial Stock from Current Balances'),
         ('update_products', 'Update Products (Prices, Qty, Barcode)'),
         ('migrate_storable', 'Migrate Products to Storable'),
     ], string='Operation', required=True)
@@ -101,11 +100,6 @@ class MssqlOperations(models.TransientModel):
 
         elif op == 'reconcile_stock':
             return config.action_reconcile_stock()
-
-        elif op == 'initial_stock':
-            config._set_initial_stock_levels()
-            return config._success_notification(
-                'Initial Stock Set', 'Stock levels set from MSSQL current balances.')
 
         elif op == 'update_products':
             return config.action_update_products()

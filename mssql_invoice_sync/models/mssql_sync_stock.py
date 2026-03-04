@@ -1592,9 +1592,9 @@ class MssqlSyncStock(models.Model):
         """Fetch CashierActivity sessions since a date for reconciliation."""
         cursor.execute("""
             SELECT
-                ca.SessionID, ca.BranchID, ca.OpenDate, ca.CloseDate
+                ca.SessionID, ca.SessionDate, ca.SessionClosedDate
             FROM [dbo].[tblCashierActivity] ca
-            WHERE ca.OpenDate >= %s
+            WHERE ca.SessionDate >= %s
             ORDER BY ca.SessionID
         """, (since_date,))
         return cursor.fetchall()
@@ -1603,11 +1603,11 @@ class MssqlSyncStock(models.Model):
         """Fetch posted purchase invoices since a date for reconciliation."""
         cursor.execute("""
             SELECT
-                pi.InvoiceID, pi.InvoiceDate, pi.SupplierID,
-                pi.TotalAmount, pi.BranchID
+                pi.PurchaseInvoiceID AS InvoiceID, pi.InvoiceDate, pi.SupplierID,
+                pi.NetTotal, pi.BranchID
             FROM [dbo].[tblPurchaseInvoice] pi
             WHERE pi.InvoiceDate >= %s
               AND pi.Posted = 1
-            ORDER BY pi.InvoiceID
+            ORDER BY pi.PurchaseInvoiceID
         """, (since_date,))
         return cursor.fetchall()
